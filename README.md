@@ -1,6 +1,6 @@
 # Discord Gateway Tracker
 
-Discord User Tokenを使ったボイスチャンネル監視ツール
+Discord User Tokenを使ったボイスチャンネル監視ツール（デスクトップアプリ版）
 
 ## クイックスタート
 
@@ -18,7 +18,12 @@ Discord User Tokenを使ったボイスチャンネル監視ツール
    - `token`: Discord User Token（詳細は`SETUP_GUIDE.md`参照）
    - `channelIds`: 監視したいボイスチャンネルIDの配列
 
-4. **実行**
+4. **デスクトップアプリとして起動**
+   ```bash
+   npm start
+   ```
+
+5. **コンソール版で実行（オプション）**
    ```bash
    npm run test:gateway
    # または
@@ -27,11 +32,25 @@ Discord User Tokenを使ったボイスチャンネル監視ツール
 
 ## ビルド（exe化）
 
+### Electronアプリのビルド
+
 ```bash
 npm run build
 ```
 
-生成された`gateway-tracker.exe`を実行すると、実行ファイルと同じディレクトリに`log`フォルダが作成され、エラー・警告ログが保存されます。
+`dist`ディレクトリに以下のファイルが生成されます：
+- `Gateway Tracker Setup X.X.X.exe` - インストーラー
+- `Gateway Tracker X.X.X.exe` - ポータブル版（単一exeファイル）
+
+**注意**: ビルド時にコード署名ツールのエラーが出る場合がありますが、これは無視して問題ありません。生成されたexeファイルは正常に動作します。
+
+### コンソール版のビルド（旧方式）
+
+```bash
+npm run build:exe
+```
+
+`gateway-tracker.exe`が生成されます（コンソール版）。
 
 ## ログ機能
 

@@ -2,19 +2,49 @@
   "name": "gateway-tracker",
   "version": "1.0.0",
   "description": "Discord Gateway API tracker for voice channel monitoring",
-  "main": "gateway-tracker.js",
-  "bin": "gateway-tracker.js",
+  "main": "main.js",
   "scripts": {
+    "start": "electron .",
     "test:gateway": "node gateway-tracker.js",
     "prebuild": "node prebuild.js",
-    "build": "pkg . --targets node18-win-x64 --output gateway-tracker.exe"
+    "build": "electron-builder --win --x64",
+    "build:exe": "pkg . --targets node18-win-x64 --output gateway-tracker.exe"
   },
   "dependencies": {
     "ws": "^8.18.3",
     "winston": "^3.11.0"
   },
   "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
     "pkg": "^5.8.1"
+  },
+  "build": {
+    "appId": "com.gateway-tracker.app",
+    "productName": "Gateway Tracker",
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "files": [
+      "**/*",
+      "!node_modules/**/*",
+      "!*.exe",
+      "!log/**/*",
+      "!gateway-tracker.exe"
+    ],
+    "directories": {
+      "output": "dist"
+    }
   },
   "pkg": {
     "assets": [
