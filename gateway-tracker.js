@@ -5,6 +5,61 @@ const WebSocket = require('ws');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const winston = require('winston');
+
+// ログディレクトリの作成
+// pkgでビルドした場合、実行ファイルの場所を基準にする
+let logDir;
+if (process.pkg) {
+  // pkgでビルドされた場合、実行ファイルと同じディレクトリにlogを作成
+  logDir = path.join(path.dirname(process.execPath), 'log');
+} else {
+  // 通常のNode.js実行の場合
+  logDir = path.join(__dirname, 'log');
+}
+
+// ディレクトリが存在しない場合は作成
+if (!fs.existsSync(logDir)) {
+  try {
+    fs.mkdirSync(logDir, { recursive: true });
+  } catch (error) {
+    // ディレクトリ作成に失敗した場合は、カレントディレクトリを使用
+    logDir = path.join(process.cwd(), 'log');
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+  }
+}
+
+// 日時でログファイル名を生成
+function getLogFileName() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hour = String(now.getHours()).padStart(2, '0');
+  const minute = String(now.getMinutes()).padStart(2, '0');
+  return `gateway-tracker-${year}${month}${day}-${hour}${minute}.log`;
+}
+
+// ロガーの設定（errorとwarnレベルのみ）
+const logger = winston.createLogger({
+  level: 'warn', // warn以上（warn, error）を記録
+  format: winston.format.combine(
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    winston.format.errors({ stack: true }),
+    winston.format.printf(({ timestamp, level, message, stack }) => {
+      return `${timestamp} [${level.toUpperCase()}] ${stack || message}`;
+    })
+  ),
+  transports: [
+    new winston.transports.File({
+      filename: path.join(logDir, getLogFileName()),
+      maxsize: 5242880, // 5MB
+      maxFiles: 10 // 最大10ファイル保持
+    })
+  ]
+});
 
 // 設定ファイルを読み込む
 const configPath = path.join(__dirname, 'config.json');
@@ -14,21 +69,25 @@ try {
   if (fs.existsSync(configPath)) {
     config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   } else {
+    logger.error('❌ config.json が見つかりません。config.example.json をコピーして設定してください。');
     console.error('❌ config.json が見つかりません。config.example.json をコピーして設定してください。');
     process.exit(1);
   }
 } catch (error) {
+  logger.error('❌ config.json の読み込みに失敗しました:', error.message);
   console.error('❌ config.json の読み込みに失敗しました:', error.message);
   process.exit(1);
 }
 
 // 必須設定の確認
 if (!config.token || config.token === 'YOUR_USER_TOKEN_HERE') {
+  logger.error('❌ config.json に有効な token を設定してください。');
   console.error('❌ config.json に有効な token を設定してください。');
   process.exit(1);
 }
 
 if (!config.channelIds || config.channelIds.length === 0) {
+  logger.error('❌ config.json に監視したい channelIds を設定してください。');
   console.error('❌ config.json に監視したい channelIds を設定してください。');
   process.exit(1);
 }
@@ -51,8 +110,11 @@ const RECONNECT_DELAY = 5000;
 const channelMap = new Map();
 const userMap = new Map();
 
-// 現在のボイス状態（チャンネルID -> ユーザーIDの配列）
+// 現在のボイス状態（ユーザーID -> チャンネルID）
 const voiceStates = new Map();
+
+// 入室時刻の記録（ユーザーID -> 入室時刻のDateオブジェクト）
+const joinTimes = new Map();
 
 // 日付フォーマット
 function formatDate(date) {
@@ -105,6 +167,7 @@ async function getGatewayUrl() {
     }
     throw new Error('Gateway URLの取得に失敗しました');
   } catch (error) {
+    logger.error('❌ Gateway URL取得エラー:', error.message);
     console.error('❌ Gateway URL取得エラー:', error.message);
     throw error;
   }
@@ -128,12 +191,12 @@ async function fetchChannel(channelId) {
     }
     return null;
   } catch (error) {
-    console.warn(`⚠️ チャンネル ${channelId} の情報取得に失敗:`, error.message);
+    logger.warn(`⚠️ チャンネル ${channelId} の情報取得に失敗:`, error.message);
     return null;
   }
 }
 
-// ユーザー情報を取得
+// ユーザー情報を取得（グローバル情報）
 async function fetchUser(userId) {
   if (userMap.has(userId)) {
     return userMap.get(userId);
@@ -153,10 +216,69 @@ async function fetchUser(userId) {
     if (response.status === 200) {
       userMap.set(userId, response.data);
       return response.data;
+    } else if (response.status === 401) {
+      logger.error(`❌ 認証エラー: トークンが無効です。ステータス: ${response.status}`);
+      console.error(`❌ 認証エラー: トークンが無効です。ステータス: ${response.status}`);
+      return null;
+    } else if (response.status === 403) {
+      // 403はプライバシー設定により情報が非公開の場合など、正常な動作なのでログを出さない
+      return null;
+    } else if (response.status === 404) {
+      // 404も正常な動作（ユーザーが存在しない等）なのでログを出さない
+      return null;
+    } else if (response.status === 429) {
+      logger.warn(`⚠️ レート制限: ユーザー ${userId} の情報取得が制限されています。ステータス: ${response.status}`);
+      return null;
+    } else {
+      // その他のエラーもログを出さない（Gatewayイベントから取得できる可能性があるため）
+      return null;
     }
-    return null;
   } catch (error) {
-    console.warn(`⚠️ ユーザー ${userId} の情報取得に失敗:`, error.message);
+    logger.warn(`⚠️ ユーザー ${userId} の情報取得に失敗:`, error.message);
+    return null;
+  }
+}
+
+// サーバー内でのメンバー情報を取得（ニックネーム等）
+async function fetchGuildMember(guildId, userId) {
+  const cacheKey = `${guildId}_${userId}`;
+  if (userMap.has(cacheKey)) {
+    return userMap.get(cacheKey);
+  }
+  
+  try {
+    const response = await httpsRequest({
+      hostname: 'discord.com',
+      path: `/api/v10/guilds/${guildId}/members/${userId}`,
+      method: 'GET',
+      headers: {
+        'Authorization': config.token,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    if (response.status === 200) {
+      userMap.set(cacheKey, response.data);
+      return response.data;
+    } else if (response.status === 401) {
+      logger.error(`❌ 認証エラー: トークンが無効です。ステータス: ${response.status}`);
+      console.error(`❌ 認証エラー: トークンが無効です。ステータス: ${response.status}`);
+      return null;
+    } else if (response.status === 403) {
+      // 403は一般的で、サーバーにアクセス権限がない場合など
+      return null;
+    } else if (response.status === 404) {
+      // 404は一般的で、メンバーがサーバーにいない場合など
+      return null;
+    } else if (response.status === 429) {
+      logger.warn(`⚠️ レート制限: メンバー情報取得が制限されています。ステータス: ${response.status}`);
+      return null;
+    } else {
+      // その他のエラーは無視（ログを出さない）
+      return null;
+    }
+  } catch (error) {
+    // エラーは無視（ログを出さない）
     return null;
   }
 }
@@ -187,10 +309,66 @@ async function sendWebhook(content) {
     if (response.status >= 200 && response.status < 300) {
       console.log('✓ Webhook送信成功');
     } else {
-      console.warn('⚠️ Webhook送信失敗:', response.status, response.data);
+      logger.warn('⚠️ Webhook送信失敗:', response.status, response.data);
     }
   } catch (error) {
-    console.warn('⚠️ Webhook送信エラー:', error.message);
+    logger.warn('⚠️ Webhook送信エラー:', error.message);
+  }
+}
+
+// ユーザー名を取得（優先順位: Gatewayイベント > キャッシュ > API）
+function getUserDisplayName(userId, eventData = null, cachedUser = null, cachedGuildMember = null) {
+  // 1. Gatewayイベントのmemberオブジェクトから取得（最優先）
+  if (eventData) {
+    // VOICE_STATE_UPDATEイベントでは、data.memberが直接含まれる場合がある
+    const member = eventData.member || (eventData.user ? eventData : null);
+    
+    if (member) {
+      // ニックネームがあれば使用（サーバー内での表示名）
+      if (member.nick) {
+        return member.nick;
+      }
+      // ユーザー情報があれば使用
+      if (member.user) {
+        const user = member.user;
+        return user.global_name || user.username || `User ${userId}`;
+      }
+      // memberオブジェクト自体にuser情報が含まれている場合
+      if (member.id === userId && (member.global_name || member.username)) {
+        return member.global_name || member.username;
+      }
+    }
+  }
+  
+  // 2. キャッシュされたサーバーメンバー情報から取得
+  if (cachedGuildMember) {
+    if (cachedGuildMember.nick) {
+      return cachedGuildMember.nick;
+    }
+    if (cachedGuildMember.user) {
+      const user = cachedGuildMember.user;
+      return user.global_name || user.username || `User ${userId}`;
+    }
+  }
+  
+  // 3. キャッシュされたユーザー情報から取得
+  if (cachedUser) {
+    return cachedUser.global_name || cachedUser.username || `User ${userId}`;
+  }
+  
+  // 4. フォールバック: IDのみ
+  return `User ${userId}`;
+}
+
+// ユーザー情報をキャッシュに保存
+function cacheUserInfo(userId, userData, guildId = null, memberData = null) {
+  if (userData) {
+    userMap.set(userId, userData);
+  }
+  
+  if (guildId && memberData) {
+    const cacheKey = `${guildId}_${userId}`;
+    userMap.set(cacheKey, memberData);
   }
 }
 
@@ -205,14 +383,45 @@ async function handleVoiceStateUpdate(data) {
     return;
   }
   
+  // Gatewayイベントのmemberオブジェクトから情報を取得（最優先）
+  if (data.member && data.member.user) {
+    const memberUser = data.member.user;
+    cacheUserInfo(userId, memberUser, guildId, data.member);
+  }
+  
   // 監視対象チャンネルか確認
   const isWatchedChannel = config.channelIds.includes(channelId);
   const previousChannelId = voiceStates.get(userId);
   const wasWatchedChannel = previousChannelId && config.channelIds.includes(previousChannelId);
   
-  // ユーザー情報を取得
-  const user = await fetchUser(userId);
-  const username = user ? (user.global_name || user.username) : `User ${userId}`;
+  // キャッシュからユーザー情報を取得
+  const cachedUser = userMap.get(userId);
+  const cachedGuildMember = guildId ? userMap.get(`${guildId}_${userId}`) : null;
+  
+  // ユーザー名を取得（Gatewayイベントのデータを優先）
+  let username = getUserDisplayName(userId, data, cachedUser, cachedGuildMember);
+  
+  // キャッシュにない場合のみAPIから取得を試みる（403エラーを避けるため、静かに失敗）
+  if (!cachedUser && !cachedGuildMember) {
+    // バックグラウンドで取得を試みる（エラーは無視）
+    fetchUser(userId).then(user => {
+      if (user) {
+        cacheUserInfo(userId, user);
+      }
+    }).catch(() => {
+      // エラーは無視
+    });
+    
+    if (guildId) {
+      fetchGuildMember(guildId, userId).then(member => {
+        if (member) {
+          cacheUserInfo(userId, null, guildId, member);
+        }
+      }).catch(() => {
+        // エラーは無視
+      });
+    }
+  }
   
   // チャンネル情報を取得
   let channelName = channelId;
@@ -231,6 +440,7 @@ async function handleVoiceStateUpdate(data) {
   // 入室
   if (channelId && isWatchedChannel && (!previousChannelId || previousChannelId !== channelId)) {
     voiceStates.set(userId, channelId);
+    joinTimes.set(userId, new Date()); // 入室時刻を記録
     
     console.log(`🔵 [${now}] ${username} が ${channelName} に入室しました`);
     
@@ -247,25 +457,54 @@ async function handleVoiceStateUpdate(data) {
   if (previousChannelId && wasWatchedChannel && (!channelId || channelId !== previousChannelId)) {
     const previousChannelName = channelMap.get(previousChannelId) || previousChannelId;
     
+    // 滞在時間を計算
+    const joinTime = joinTimes.get(userId);
+    let stayDuration = '';
+    if (joinTime) {
+      const durationMs = Date.now() - joinTime.getTime();
+      const hours = Math.floor(durationMs / (1000 * 60 * 60));
+      const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((durationMs % (1000 * 60)) / 1000);
+      
+      if (hours > 0) {
+        stayDuration = ` (滞在時間: ${hours}時間${minutes}分${seconds}秒)`;
+      } else if (minutes > 0) {
+        stayDuration = ` (滞在時間: ${minutes}分${seconds}秒)`;
+      } else {
+        stayDuration = ` (滞在時間: ${seconds}秒)`;
+      }
+      
+      joinTimes.delete(userId);
+    }
+    
     if (channelId) {
       voiceStates.set(userId, channelId);
+      // 新しいチャンネルに入室した場合は、入室時刻を更新
+      if (isWatchedChannel) {
+        joinTimes.set(userId, new Date());
+      }
     } else {
       voiceStates.delete(userId);
     }
     
-    console.log(`🔴 [${now}] ${username} が ${previousChannelName} から退出しました`);
+    console.log(`🔴 [${now}] ${username} が ${previousChannelName} から退出しました${stayDuration}`);
     
     if (config.notificationsEnabled) {
-      console.log(`   → 通知: ${username} が ${previousChannelName} から退出`);
+      console.log(`   → 通知: ${username} が ${previousChannelName} から退出${stayDuration}`);
     }
     
     if (config.autoWebhookEnabled) {
-      await sendWebhook(`🔴 **${username}** が **${previousChannelName}** から退出しました`);
+      await sendWebhook(`🔴 **${username}** が **${previousChannelName}** から退出しました${stayDuration}`);
     }
   } else if (channelId) {
     voiceStates.set(userId, channelId);
+    // 監視対象外のチャンネルに移動した場合は、入室時刻をクリア
+    if (!isWatchedChannel) {
+      joinTimes.delete(userId);
+    }
   } else if (previousChannelId) {
     voiceStates.delete(userId);
+    joinTimes.delete(userId);
   }
 }
 
@@ -300,11 +539,13 @@ async function connect() {
         const message = JSON.parse(data.toString());
         handleGatewayMessage(message);
       } catch (error) {
+        logger.error('❌ メッセージ解析エラー:', error.message);
         console.error('❌ メッセージ解析エラー:', error.message);
       }
     });
     
     ws.on('error', (error) => {
+      logger.error('❌ WebSocketエラー:', error.message);
       console.error('❌ WebSocketエラー:', error.message);
     });
     
@@ -323,12 +564,14 @@ async function connect() {
         console.log(`${RECONNECT_DELAY / 1000}秒後に再接続を試みます... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
         setTimeout(connect, RECONNECT_DELAY);
       } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        logger.error('❌ 最大再接続試行回数に達しました。終了します。');
         console.error('❌ 最大再接続試行回数に達しました。終了します。');
         process.exit(1);
       }
     });
     
   } catch (error) {
+    logger.error('❌ 接続エラー:', error.message);
     console.error('❌ 接続エラー:', error.message);
     if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
       reconnectAttempts++;
@@ -441,8 +684,37 @@ function handleDispatchEvent(eventType, data) {
       
     case 'VOICE_STATE_UPDATE':
       handleVoiceStateUpdate(data).catch(err => {
+        logger.error('❌ Voice State Update処理エラー:', err.message);
         console.error('❌ Voice State Update処理エラー:', err.message);
       });
+      break;
+      
+    case 'GUILD_MEMBERS_CHUNK':
+      // サーバーメンバーの一括取得イベントからユーザー情報をキャッシュ
+      if (data.members && Array.isArray(data.members)) {
+        data.members.forEach(member => {
+          if (member.user) {
+            const userId = member.user.id;
+            cacheUserInfo(userId, member.user, data.guild_id, member);
+          }
+        });
+      }
+      break;
+      
+    case 'GUILD_MEMBER_UPDATE':
+      // サーバーメンバー情報の更新イベントからユーザー情報をキャッシュ
+      if (data.user && data.guild_id) {
+        const userId = data.user.id;
+        cacheUserInfo(userId, data.user, data.guild_id, data);
+      }
+      break;
+      
+    case 'GUILD_MEMBER_ADD':
+      // サーバーにメンバーが追加されたイベントからユーザー情報をキャッシュ
+      if (data.user && data.guild_id) {
+        const userId = data.user.id;
+        cacheUserInfo(userId, data.user, data.guild_id, data);
+      }
       break;
       
     default:
