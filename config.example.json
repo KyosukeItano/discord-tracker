@@ -1,0 +1,9 @@
+{
+  "token": "",
+  "channelIds": ["","","","","",""],
+  "webhookUrl": "",
+  "selfUserId": "",
+  "notificationsEnabled": true,
+  "autoWebhookEnabled": true
+}
+
