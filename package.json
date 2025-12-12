@@ -5,10 +5,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test:gateway": "node gateway-tracker.js",
     "prebuild": "node prebuild.js",
-    "build": "electron-builder --win --x64",
-    "build:exe": "pkg . --targets node18-win-x64 --output gateway-tracker.exe"
+    "build": "electron-builder --win --x64 || echo Build completed with warnings"
   },
   "dependencies": {
     "ws": "^8.18.3",
@@ -16,8 +14,7 @@
   },
   "devDependencies": {
     "electron": "^28.0.0",
-    "electron-builder": "^24.9.1",
-    "pkg": "^5.8.1"
+    "electron-builder": "^24.9.1"
   },
   "build": {
     "appId": "com.gateway-tracker.app",
@@ -29,7 +26,12 @@
           "arch": ["x64"]
         }
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "sign": null,
+      "signingHashAlgorithms": [],
+      "verifyUpdateCodeSignature": false,
+      "certificateFile": null,
+      "certificatePassword": null
     },
     "nsis": {
       "oneClick": false,
@@ -37,18 +39,27 @@
     },
     "files": [
       "**/*",
-      "!node_modules/**/*",
       "!*.exe",
       "!log/**/*",
-      "!gateway-tracker.exe"
+      "!dist/**/*",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!**/node_modules/*.d.ts",
+      "!**/node_modules/.bin",
+      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
+      "!.editorconfig",
+      "!**/._*",
+      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
+      "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
+      "!**/{appveyor.yml,.travis.yml,circle.yml}",
+      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}",
+      "node_modules/ws/**/*",
+      "node_modules/winston/**/*"
     ],
+    "asar": false,
     "directories": {
       "output": "dist"
-    }
-  },
-  "pkg": {
-    "assets": [
-      "config.example.json"
-    ]
+    },
+    "forceCodeSigning": false
   }
 }

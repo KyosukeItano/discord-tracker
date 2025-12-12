@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gateway Tracker</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🔵 Discord Gateway Tracker</h1>
+      <div class="status" id="status">
+        <span class="status-indicator" id="statusIndicator"></span>
+        <span id="statusText">停止中</span>
+      </div>
+    </header>
+
+    <div class="controls">
+      <button id="startBtn" class="btn btn-start">開始</button>
+      <button id="stopBtn" class="btn btn-stop" disabled>停止</button>
+      <label class="checkbox-label">
+        <input type="checkbox" id="webhookEnabled" checked>
+        <span>WebhookでDiscordに通知</span>
+      </label>
+    </div>
+
+    <div class="log-container">
+      <div class="log-header">
+        <h2>入退出ログ</h2>
+        <button id="clearLogBtn" class="btn-small">クリア</button>
+      </div>
+      <div class="log-content" id="logContent">
+        <div class="log-entry info">アプリケーションを起動しました</div>
+      </div>
+    </div>
+
+    <div class="system-log-container">
+      <div class="accordion-header" id="systemLogToggle">
+        <h2>システムログ</h2>
+        <span class="accordion-icon" id="accordionIcon">▼</span>
+      </div>
+      <div class="accordion-content" id="systemLogContent" style="display: none;">
+        <div class="log-content" id="systemLogContentInner">
+          <div class="log-entry info">システムログを表示します</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
+
