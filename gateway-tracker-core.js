@@ -5,6 +5,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const winston = require('winston');
+const DataManager = require('./data-manager');
 
 class GatewayTracker extends EventEmitter {
   constructor() {
@@ -19,6 +20,7 @@ class GatewayTracker extends EventEmitter {
     this.RECONNECT_DELAY = 5000;
     this.reconnectTimeout = null;
     this.channelMap = new Map();
+    this.guildMap = new Map();
     this.userMap = new Map();
     this.voiceStates = new Map();
     this.joinTimes = new Map();
@@ -27,6 +29,7 @@ class GatewayTracker extends EventEmitter {
     this.logDir = null;
     this.isRunning = false;
     this.webhookEnabled = false;
+    this.dataManager = null;
     
     this.initializeLogger();
     // loadConfig()は非同期のため、start()で呼び出す
@@ -50,6 +53,9 @@ class GatewayTracker extends EventEmitter {
         }
       }
     }
+
+    // データマネージャーの初期化
+    this.dataManager = new DataManager(this.logDir);
 
     // ロガーの設定
     this.logger = winston.createLogger({
@@ -87,7 +93,7 @@ class GatewayTracker extends EventEmitter {
       try {
         await this.loadConfigFromSecretsManager();
       } catch (error) {
-        this.emit('log', { type: 'error', message: `❌ AWS Secrets Managerからの読み込みに失敗: ${error.message}` });
+        this.emit('log', { type: 'error', message: `❌ AWS Secrets Managerからの読み込みに失敗: ${error.message}`, logCategory: 'system' });
         // フォールバック: config.jsonを試す
         this.loadConfigFromFile();
       }
@@ -98,12 +104,12 @@ class GatewayTracker extends EventEmitter {
 
     // 設定の検証
     if (!this.config.token || this.config.token === 'YOUR_USER_TOKEN_HERE') {
-      this.emit('log', { type: 'error', message: '❌ 有効な token を設定してください。' });
+      this.emit('log', { type: 'error', message: '❌ 有効な token を設定してください。', logCategory: 'system' });
       throw new Error('Invalid token');
     }
 
     if (!this.config.channelIds || this.config.channelIds.length === 0) {
-      this.emit('log', { type: 'error', message: '❌ 監視したい channelIds を設定してください。' });
+      this.emit('log', { type: 'error', message: '❌ 監視したい channelIds を設定してください。', logCategory: 'system' });
       throw new Error('No channel IDs');
     }
   }
@@ -123,7 +129,7 @@ class GatewayTracker extends EventEmitter {
       
       if (response.SecretString) {
         this.config = JSON.parse(response.SecretString);
-        this.emit('log', { type: 'success', message: '✅ AWS Secrets Managerから設定を読み込みました' });
+        this.emit('log', { type: 'success', message: '✅ AWS Secrets Managerから設定を読み込みました', logCategory: 'system' });
       } else {
         throw new Error('SecretString not found in response');
       }
@@ -141,18 +147,18 @@ class GatewayTracker extends EventEmitter {
       if (fs.existsSync(configPath)) {
         this.config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       } else {
-        this.emit('log', { type: 'error', message: '❌ config.json が見つかりません。' });
+        this.emit('log', { type: 'error', message: '❌ config.json が見つかりません。', logCategory: 'system' });
         throw new Error('config.json not found');
       }
     } catch (error) {
-      this.emit('log', { type: 'error', message: `❌ config.json の読み込みに失敗: ${error.message}` });
+      this.emit('log', { type: 'error', message: `❌ config.json の読み込みに失敗: ${error.message}`, logCategory: 'system' });
       throw error;
     }
   }
 
   setWebhookEnabled(enabled) {
     this.webhookEnabled = enabled;
-    this.emit('log', { type: 'info', message: `Webhook通知: ${enabled ? '有効' : '無効'}` });
+    this.emit('log', { type: 'info', message: `Webhook通知: ${enabled ? '有効' : '無効'}`, logCategory: 'system' });
   }
 
   async start(options = {}) {
@@ -174,11 +180,11 @@ class GatewayTracker extends EventEmitter {
     if (options.webhookEnabled !== undefined) {
       this.webhookEnabled = options.webhookEnabled;
     }
-    this.emit('log', { type: 'info', message: '🚀 Gateway Tracker を起動します...' });
+    this.emit('log', { type: 'info', message: '🚀 Gateway Tracker を起動します...', logCategory: 'system' });
     this.initializeChannels().then(() => {
       this.connect();
     }).catch(err => {
-      this.emit('log', { type: 'error', message: `初期化エラー: ${err.message}` });
+      this.emit('log', { type: 'error', message: `初期化エラー: ${err.message}`, logCategory: 'system' });
     });
   }
 
@@ -198,7 +204,7 @@ class GatewayTracker extends EventEmitter {
     }
     // 再接続回数をリセット
     this.reconnectAttempts = 0;
-    this.emit('log', { type: 'info', message: '⏹️ Gateway Tracker を停止しました' });
+    this.emit('log', { type: 'info', message: '⏹️ Gateway Tracker を停止しました', logCategory: 'system' });
     this.emit('status', { running: false });
   }
 
@@ -207,7 +213,7 @@ class GatewayTracker extends EventEmitter {
   // 実際にはgateway-tracker.jsのロジックをここに移植する必要があります
 
   async initializeChannels() {
-    this.emit('log', { type: 'info', message: '📋 チャンネル情報を取得中...' });
+    this.emit('log', { type: 'info', message: '📋 チャンネル情報を取得中...', logCategory: 'system' });
     
     for (const channelId of this.config.channelIds) {
       if (!channelId) continue;
@@ -215,12 +221,12 @@ class GatewayTracker extends EventEmitter {
         const channel = await this.fetchChannel(channelId);
         if (channel) {
           this.channelMap.set(channelId, channel.name);
-          this.emit('log', { type: 'success', message: `   ✓ ${channel.name} (${channelId})` });
+          this.emit('log', { type: 'success', message: `   ✓ ${channel.name} (${channelId})`, logCategory: 'system' });
         } else {
-          this.emit('log', { type: 'warn', message: `   ⚠️ チャンネル ${channelId} の情報を取得できませんでした` });
+          this.emit('log', { type: 'warn', message: `   ⚠️ チャンネル ${channelId} の情報を取得できませんでした`, logCategory: 'system' });
         }
       } catch (error) {
-        this.emit('log', { type: 'warn', message: `   ⚠️ チャンネル ${channelId} の情報取得に失敗: ${error.message}` });
+        this.emit('log', { type: 'warn', message: `   ⚠️ チャンネル ${channelId} の情報取得に失敗: ${error.message}`, logCategory: 'system' });
       }
     }
   }
@@ -238,11 +244,39 @@ class GatewayTracker extends EventEmitter {
       });
       
       if (response.status === 200) {
-        return response.data;
+        const channel = response.data;
+        // ギルドIDがあればギルド情報も取得
+        if (channel.guild_id && !this.guildMap.has(channel.guild_id)) {
+          await this.fetchGuild(channel.guild_id);
+        }
+        return channel;
       }
       return null;
     } catch (error) {
       this.logger.warn(`⚠️ チャンネル ${channelId} の情報取得に失敗:`, error.message);
+      return null;
+    }
+  }
+
+  async fetchGuild(guildId) {
+    try {
+      const response = await this.httpsRequest({
+        hostname: 'discord.com',
+        path: `/api/v10/guilds/${guildId}`,
+        method: 'GET',
+        headers: {
+          'Authorization': this.config.token,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      if (response.status === 200 && response.data.name) {
+        this.guildMap.set(guildId, response.data.name);
+        return response.data.name;
+      }
+      return null;
+    } catch (error) {
+      this.logger.warn(`⚠️ ギルド ${guildId} の情報取得に失敗:`, error.message);
       return null;
     }
   }
@@ -270,14 +304,14 @@ class GatewayTracker extends EventEmitter {
   }
 
   async connect(useResume = false) {
-    this.emit('log', { type: 'info', message: '🔌 Gatewayに接続中...' });
+    this.emit('log', { type: 'info', message: '🔌 Gatewayに接続中...', logCategory: 'system' });
     
     try {
       // Resumeを使用する場合はresumeGatewayUrlを使用
       let url;
       if (useResume && this.resumeGatewayUrl) {
         url = `${this.resumeGatewayUrl}?v=10&encoding=json`;
-        this.emit('log', { type: 'info', message: '📋 セッション再開を試みます...' });
+        this.emit('log', { type: 'info', message: '📋 セッション再開を試みます...', logCategory: 'system' });
       } else {
         const gatewayUrl = await this.getGatewayUrl();
         url = `${gatewayUrl}?v=10&encoding=json`;
@@ -286,7 +320,7 @@ class GatewayTracker extends EventEmitter {
       this.ws = new WebSocket(url);
       
       this.ws.on('open', () => {
-        this.emit('log', { type: 'success', message: '✓ WebSocket接続確立' });
+        this.emit('log', { type: 'success', message: '✓ WebSocket接続確立', logCategory: 'system' });
         if (useResume && this.sessionId && this.sequence !== null) {
           this.sendResume();
         } else {
@@ -300,18 +334,18 @@ class GatewayTracker extends EventEmitter {
           this.handleGatewayMessage(message);
         } catch (error) {
           this.logger.error('❌ メッセージ解析エラー:', error.message);
-          this.emit('log', { type: 'error', message: `❌ メッセージ解析エラー: ${error.message}` });
+          this.emit('log', { type: 'error', message: `❌ メッセージ解析エラー: ${error.message}`, logCategory: 'system' });
         }
       });
       
       this.ws.on('error', (error) => {
         this.logger.error('❌ WebSocketエラー:', error.message);
-        this.emit('log', { type: 'error', message: `❌ WebSocketエラー: ${error.message}` });
+        this.emit('log', { type: 'error', message: `❌ WebSocketエラー: ${error.message}`, logCategory: 'system' });
       });
       
       this.ws.on('close', (code, reason) => {
         const reasonStr = reason ? reason.toString() : '';
-        this.emit('log', { type: 'warn', message: `⚠️ WebSocket接続が閉じられました (コード: ${code}${reasonStr ? `, 理由: ${reasonStr}` : ''})` });
+        this.emit('log', { type: 'warn', message: `⚠️ WebSocket接続が閉じられました (コード: ${code}${reasonStr ? `, 理由: ${reasonStr}` : ''})`, logCategory: 'system' });
         
         if (this.heartbeatInterval) {
           clearInterval(this.heartbeatInterval);
@@ -346,7 +380,8 @@ class GatewayTracker extends EventEmitter {
           
           this.emit('log', { 
             type: 'info', 
-            message: `🔄 ${delay / 1000}秒後に再接続を試みます... (${attemptInfo})` 
+            message: `🔄 ${delay / 1000}秒後に再接続を試みます... (${attemptInfo})`,
+            logCategory: 'system'
           });
           
             this.reconnectTimeout = setTimeout(() => {
@@ -359,13 +394,13 @@ class GatewayTracker extends EventEmitter {
             }
           }, delay);
         } else if (this.isRunning) {
-          this.emit('log', { type: 'error', message: '❌ 再接続回数の上限に達しました。手動で再起動してください。' });
+          this.emit('log', { type: 'error', message: '❌ 再接続回数の上限に達しました。手動で再起動してください。', logCategory: 'system' });
           this.logger.error('❌ 再接続回数の上限に達しました');
         }
       });
     } catch (error) {
       this.logger.error('❌ 接続エラー:', error.message);
-      this.emit('log', { type: 'error', message: `❌ 接続エラー: ${error.message}` });
+      this.emit('log', { type: 'error', message: `❌ 接続エラー: ${error.message}`, logCategory: 'system' });
     }
   }
 
@@ -405,12 +440,12 @@ class GatewayTracker extends EventEmitter {
     };
     
     this.ws.send(JSON.stringify(payload));
-    this.emit('log', { type: 'info', message: '📤 Identify送信' });
+    this.emit('log', { type: 'info', message: '📤 Identify送信', logCategory: 'system' });
   }
 
   sendResume() {
     if (!this.sessionId || this.sequence === null) {
-      this.emit('log', { type: 'warn', message: '⚠️ セッション情報が不足しています。Identifyにフォールバックします。' });
+      this.emit('log', { type: 'warn', message: '⚠️ セッション情報が不足しています。Identifyにフォールバックします。', logCategory: 'system' });
       this.sendIdentify();
       return;
     }
@@ -425,7 +460,7 @@ class GatewayTracker extends EventEmitter {
     };
     
     this.ws.send(JSON.stringify(payload));
-    this.emit('log', { type: 'info', message: '📤 Resume送信' });
+    this.emit('log', { type: 'info', message: '📤 Resume送信', logCategory: 'system' });
   }
 
   attemptResume() {
@@ -443,7 +478,7 @@ class GatewayTracker extends EventEmitter {
     
     switch (op) {
       case 10:
-        this.emit('log', { type: 'success', message: '✓ Gateway接続成功' });
+        this.emit('log', { type: 'success', message: '✓ Gateway接続成功', logCategory: 'system' });
         const heartbeatInterval_ms = d.heartbeat_interval;
         this.heartbeatInterval = setInterval(() => this.sendHeartbeat(), heartbeatInterval_ms);
         break;
@@ -456,12 +491,12 @@ class GatewayTracker extends EventEmitter {
         break;
         
       case 7:
-        this.emit('log', { type: 'warn', message: '⚠️ 再接続要求を受信' });
+        this.emit('log', { type: 'warn', message: '⚠️ 再接続要求を受信', logCategory: 'system' });
         this.ws.close();
         break;
         
       case 9:
-        this.emit('log', { type: 'warn', message: '⚠️ セッションが無効です。再識別します。' });
+        this.emit('log', { type: 'warn', message: '⚠️ セッションが無効です。再識別します。', logCategory: 'system' });
         this.sessionId = null;
         this.sequence = null;
         setTimeout(() => this.sendIdentify(), 5000);
@@ -480,18 +515,18 @@ class GatewayTracker extends EventEmitter {
   handleDispatchEvent(eventType, data) {
     switch (eventType) {
       case 'READY':
-        this.emit('log', { type: 'success', message: '✓ ログイン成功' });
+        this.emit('log', { type: 'success', message: '✓ ログイン成功', logCategory: 'system' });
         this.sessionId = data.session_id;
         this.resumeGatewayUrl = data.resume_gateway_url;
         // 再接続回数をリセット（正常に接続できたため）
         this.reconnectAttempts = 0;
-        this.emit('log', { type: 'info', message: `   セッションID: ${this.sessionId}` });
-        this.emit('log', { type: 'info', message: `   監視チャンネル数: ${this.config.channelIds.length}` });
+        this.emit('log', { type: 'info', message: `   セッションID: ${this.sessionId}`, logCategory: 'system' });
+        this.emit('log', { type: 'info', message: `   監視チャンネル数: ${this.config.channelIds.length}`, logCategory: 'system' });
         this.emit('status', { running: true });
         break;
         
       case 'RESUMED':
-        this.emit('log', { type: 'success', message: '✓ セッション再開成功' });
+        this.emit('log', { type: 'success', message: '✓ セッション再開成功', logCategory: 'system' });
         // 再接続回数をリセット（成功したため）
         this.reconnectAttempts = 0;
         break;
@@ -499,7 +534,7 @@ class GatewayTracker extends EventEmitter {
       case 'VOICE_STATE_UPDATE':
         this.handleVoiceStateUpdate(data).catch(err => {
           this.logger.error('❌ Voice State Update処理エラー:', err.message);
-          this.emit('log', { type: 'error', message: `❌ Voice State Update処理エラー: ${err.message}` });
+          this.emit('log', { type: 'error', message: `❌ Voice State Update処理エラー: ${err.message}`, logCategory: 'system' });
         });
         break;
     }
@@ -512,6 +547,15 @@ class GatewayTracker extends EventEmitter {
     
     if (this.config.selfUserId && userId === this.config.selfUserId) {
       return;
+    }
+    
+    // ギルド情報を取得（まだ取得していない場合）
+    let guildName = 'Unknown Server';
+    if (guildId) {
+      if (!this.guildMap.has(guildId)) {
+        await this.fetchGuild(guildId);
+      }
+      guildName = this.guildMap.get(guildId) || `Guild ${guildId}`;
     }
     
     const isWatchedChannel = this.config.channelIds.includes(channelId);
@@ -531,12 +575,33 @@ class GatewayTracker extends EventEmitter {
       channelName = this.channelMap.get(channelId);
     }
     
-    const now = new Date().toLocaleString('ja-JP');
+    const now = new Date();
+    const nowStr = now.toLocaleString('ja-JP');
     
     if (channelId && isWatchedChannel && (!previousChannelId || previousChannelId !== channelId)) {
       this.voiceStates.set(userId, channelId);
-      this.joinTimes.set(userId, new Date());
-      this.emit('log', { type: 'info', message: `🔵 [${now}] ${username} が ${channelName} に入室しました` });
+      this.joinTimes.set(userId, now);
+      // CSVに保存
+      if (this.dataManager) {
+        this.dataManager.saveLogEntry({
+          logCategory: 'join',
+          guildName: guildName,
+          userName: username,
+          channelName: channelName,
+          channelId: channelId,
+          timestamp: now.getTime()
+        });
+      }
+      
+      this.emit('log', { 
+        type: 'info', 
+        message: `${username} が ${channelName} に入室しました`,
+        logCategory: 'join',
+        guildName: guildName,
+        userName: username,
+        channelName: channelName,
+        timestamp: now.getTime()
+      });
       
       // Webhook送信（チェックが入っている時だけ）
       if (this.webhookEnabled && this.isRunning) {
@@ -551,8 +616,9 @@ class GatewayTracker extends EventEmitter {
       const joinTime = this.joinTimes.get(userId);
       let stayDuration = '';
       
+      let durationMs = 0;
       if (joinTime) {
-        const durationMs = Date.now() - joinTime.getTime();
+        durationMs = Date.now() - joinTime.getTime();
         const hours = Math.floor(durationMs / (1000 * 60 * 60));
         const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
         const seconds = Math.floor((durationMs % (1000 * 60)) / 1000);
@@ -567,6 +633,19 @@ class GatewayTracker extends EventEmitter {
         this.joinTimes.delete(userId);
       }
       
+      // CSVに保存
+      if (this.dataManager) {
+        this.dataManager.saveLogEntry({
+          logCategory: 'leave',
+          guildName: guildName,
+          userName: username,
+          channelName: previousChannelName,
+          channelId: previousChannelId,
+          timestamp: now.getTime(),
+          stayDurationMs: durationMs
+        });
+      }
+      
       if (channelId) {
         this.voiceStates.set(userId, channelId);
         if (isWatchedChannel) {
@@ -576,7 +655,17 @@ class GatewayTracker extends EventEmitter {
         this.voiceStates.delete(userId);
       }
       
-      this.emit('log', { type: 'info', message: `🔴 [${now}] ${username} が ${previousChannelName} から退出しました${stayDuration}` });
+      this.emit('log', { 
+        type: 'info', 
+        message: `${username} が ${previousChannelName} から退出しました${stayDuration}`,
+        logCategory: 'leave',
+        guildName: guildName,
+        userName: username,
+        channelName: previousChannelName,
+        stayDuration: stayDuration,
+        timestamp: now.getTime(),
+        stayDurationMs: durationMs
+      });
       
       // Webhook送信（チェックが入っている時だけ）
       if (this.webhookEnabled && this.isRunning) {
@@ -618,11 +707,11 @@ class GatewayTracker extends EventEmitter {
         // Webhook送信成功（ログ出力なし）
       } else {
         this.logger.warn('⚠️ Webhook送信失敗:', response.status, response.data);
-        this.emit('log', { type: 'warn', message: `⚠️ Webhook送信失敗: ${response.status}` });
+        this.emit('log', { type: 'warn', message: `⚠️ Webhook送信失敗: ${response.status}`, logCategory: 'system' });
       }
     } catch (error) {
       this.logger.warn('⚠️ Webhook送信エラー:', error.message);
-      this.emit('log', { type: 'warn', message: `⚠️ Webhook送信エラー: ${error.message}` });
+      this.emit('log', { type: 'warn', message: `⚠️ Webhook送信エラー: ${error.message}`, logCategory: 'system' });
     }
   }
 }
